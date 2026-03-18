@@ -1,7 +1,14 @@
 const SHEET_REAL = 'BD_Real';
 const SHEET_TC = 'TC';
 const SHEET_TD = 'TD';
-const DEFAULT_EXCEL_PATH = './BD Real vs PPTO.xlsx';
+const DEFAULT_EXCEL_CANDIDATES = [
+  './BD Real vs PPTO.xlsx',
+  './BD%20Real%20vs%20PPTO.xlsx',
+  'BD Real vs PPTO.xlsx',
+  'BD%20Real%20vs%20PPTO.xlsx',
+  '/BD Real vs PPTO.xlsx',
+  '/BD%20Real%20vs%20PPTO.xlsx',
+];
 
 const TC_KEYS = {
   month: ['Month', 'MES', 'Mes'],
@@ -341,20 +348,35 @@ function applyWorkbook(workbook) {
 }
 
 async function loadWorkbookFromRoot() {
-  try {
-    updateStatus('Cargando BD Real vs PPTO.xlsx desde la raíz...');
-    const response = await fetch(DEFAULT_EXCEL_PATH);
-    if (!response.ok) throw new Error('No accesible por fetch');
+  updateStatus('Cargando BD Real vs PPTO.xlsx desde la raíz...');
 
-    const buf = await response.arrayBuffer();
-    const workbook = XLSX.read(buf, { type: 'array' });
-    applyWorkbook(workbook);
-  } catch {
-    updateStatus(
-      'No se pudo cargar BD Real vs PPTO.xlsx. Verifica que esté en la raíz del proyecto.',
-      'error'
-    );
+  const errors = [];
+  for (const path of DEFAULT_EXCEL_CANDIDATES) {
+    try {
+      const response = await fetch(path, { cache: 'no-store' });
+      if (!response.ok) {
+        errors.push(`${path} -> HTTP ${response.status}`);
+        continue;
+      }
+
+      const buf = await response.arrayBuffer();
+      const workbook = XLSX.read(buf, { type: 'array' });
+      applyWorkbook(workbook);
+      return;
+    } catch (error) {
+      errors.push(`${path} -> ${error?.message || 'error de red'}`);
+    }
   }
+
+  const runningOnFileProtocol = window.location.protocol === 'file:';
+  const protocolHint = runningOnFileProtocol
+    ? ' Detectado file://; por seguridad del navegador fetch puede fallar en archivos locales. Levanta un servidor simple (ej: `python -m http.server`) y vuelve a abrir la URL http://localhost.'
+    : '';
+
+  updateStatus(
+    `No se pudo cargar BD Real vs PPTO.xlsx desde la raíz. Intentos: ${errors.join(' | ')}.${protocolHint}`,
+    'error'
+  );
 }
 
 wireEvents();
