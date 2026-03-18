@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Planilla Real vs Presupuesto</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="container">
+      <h1>Visor de Planilla (sin servidor backend)</h1>
+      <p class="hint">
+        Carga el archivo Excel para ver y filtrar <strong>BD_Real</strong> y
+        <strong>BD_Presupuesto</strong> desde el navegador.
+      </p>
+
+      <section class="toolbar">
+        <label for="excelFile" class="file-label">Seleccionar Excel</label>
+        <input id="excelFile" type="file" accept=".xlsx,.xls" />
+        <button id="loadDefaultBtn" type="button">Intentar cargar archivo del repositorio</button>
+      </section>
+
+      <section id="status" class="status">Esperando archivo…</section>
+
+      <section class="filters">
+        <h2>Filtros globales (modo AND)</h2>
+        <div class="filter-grid" id="filterGrid"></div>
+        <label class="text-filter">
+          Buscar texto libre
+          <input id="textQuery" type="search" placeholder="Ej: CECO, cuenta, explicación…" />
+        </label>
+        <button id="clearFilters" type="button">Limpiar filtros</button>
+      </section>
+
+      <section class="tables">
+        <article>
+          <h2>BD_Real <span id="countReal" class="count"></span></h2>
+          <div class="table-wrap"><table id="tableReal"></table></div>
+        </article>
+
+        <article>
+          <h2>BD_Presupuesto <span id="countPpto" class="count"></span></h2>
+          <div class="table-wrap"><table id="tablePpto"></table></div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>
