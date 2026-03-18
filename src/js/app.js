@@ -1,41 +1,49 @@
 const SHEET_REAL = 'BD_Real';
-const SHEET_PPTO = 'BD_Presupuesto';
-const SHEET_PPTO_ALT = 'BD Presupuesto';
 const SHEET_TC = 'TC';
 const SHEET_TD = 'TD';
-const FALLBACK_FILTER_COLUMNS = ['Month', 'TIPO__PRESUPUESTO', 'UBICACIÓN', 'Fecha'];
 const DEFAULT_EXCEL_PATH = './BD Real vs PPTO.xlsx';
-const ROW_RENDER_LIMIT = 600;
+
+const TC_KEYS = {
+  month: ['Month', 'MES', 'Mes'],
+  type: ['TIPO__PRESUPUESTO', 'TIPO_PRESUPUESTO', 'Tipo'],
+  location: ['UBICACIÓN', 'UBICACION', 'Ubicación', 'Ubicacion'],
+};
 
 const state = {
-  real: [],
-  ppto: [],
-  filterColumns: [...FALLBACK_FILTER_COLUMNS],
-  filterCatalog: {},
-  filters: Object.fromEntries(FALLBACK_FILTER_COLUMNS.map((c) => [c, ''])),
+  rows: [],
+  page: 1,
+  pageSize: 50,
+  sort: { key: '', dir: 'asc' },
   textQuery: '',
+  tcFilters: { month: '', type: '', location: '' },
+  extraFilterColumns: [],
+  extraFilters: {},
+  catalogs: { month: [], type: [], location: [], extra: {} },
 };
 
 const el = {
-  file: document.querySelector('#excelFile'),
   status: document.querySelector('#status'),
-  tableReal: document.querySelector('#tableReal'),
-  tablePpto: document.querySelector('#tablePpto'),
-  countReal: document.querySelector('#countReal'),
-  countPpto: document.querySelector('#countPpto'),
+  tcMonth: document.querySelector('#tcMonth'),
+  tcType: document.querySelector('#tcType'),
+  tcLocation: document.querySelector('#tcLocation'),
   filterGrid: document.querySelector('#filterGrid'),
-  clearFilters: document.querySelector('#clearFilters'),
   textQuery: document.querySelector('#textQuery'),
-  loadDefaultBtn: document.querySelector('#loadDefaultBtn'),
+  clearFilters: document.querySelector('#clearFilters'),
+  tableReal: document.querySelector('#tableReal'),
+  tableMeta: document.querySelector('#tableMeta'),
+  prevPage: document.querySelector('#prevPage'),
+  nextPage: document.querySelector('#nextPage'),
+  pageInfo: document.querySelector('#pageInfo'),
+  pageSize: document.querySelector('#pageSize'),
 };
 
 function normalizeHeaders(rows) {
   return rows.map((row) => {
-    const normalized = {};
-    for (const [key, value] of Object.entries(row)) {
-      normalized[String(key).trim()] = value == null ? '' : String(value).trim();
+    const out = {};
+    for (const [k, v] of Object.entries(row)) {
+      out[String(k).trim()] = v == null ? '' : String(v).trim();
     }
-    return normalized;
+    return out;
   });
 }
 
@@ -52,11 +60,9 @@ function excelDateToISO(value) {
   }
 
   const date = new Date(value);
-  if (!Number.isNaN(date.getTime())) {
-    return date.toISOString().slice(0, 10);
-  }
+  if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
 
-  return String(value);
+  return String(value).trim();
 }
 
 function normalizeRows(rows) {
@@ -76,12 +82,12 @@ function getSheetRows(workbook, sheetName) {
   return XLSX.utils.sheet_to_json(ws, { defval: '' });
 }
 
-function updateStatus(message, type = 'info') {
+function updateStatus(message, type = 'ok') {
   el.status.textContent = message;
-  el.status.style.borderLeft = `5px solid ${type === 'error' ? '#ef4444' : '#10b981'}`;
+  el.status.style.borderLeftColor = type === 'error' ? '#ef4444' : '#10b981';
 }
 
-function getUniqueValues(rows, col) {
+function uniqueValues(rows, col) {
   return Array.from(
     new Set(
       rows
@@ -91,190 +97,265 @@ function getUniqueValues(rows, col) {
   ).sort((a, b) => a.localeCompare(b, 'es'));
 }
 
-function initializeFilters(columns, catalog = {}) {
-  state.filterColumns = columns.length ? columns : [...FALLBACK_FILTER_COLUMNS];
-  state.filterCatalog = catalog;
-  state.filters = Object.fromEntries(state.filterColumns.map((c) => [c, '']));
+function pickColumn(columns, candidates) {
+  return candidates.find((c) => columns.includes(c)) || '';
 }
 
-function buildFilters() {
-  el.filterGrid.innerHTML = '';
+function buildSelect(selectEl, values, selected) {
+  selectEl.innerHTML = '<option value="">Todos</option>';
+  values.forEach((value) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    option.selected = value === selected;
+    selectEl.appendChild(option);
+  });
+}
 
-  for (const col of state.filterColumns) {
-    const wrapper = document.createElement('label');
-    wrapper.textContent = col;
+function setupCatalogs(tcRows, realRows) {
+  const realColumns = realRows.length ? Object.keys(realRows[0]) : [];
+  const tcColumns = tcRows.length ? Object.keys(tcRows[0]) : [];
+
+  const monthCol = pickColumn(tcColumns, TC_KEYS.month) || pickColumn(realColumns, TC_KEYS.month);
+  const typeCol = pickColumn(tcColumns, TC_KEYS.type) || pickColumn(realColumns, TC_KEYS.type);
+  const locCol = pickColumn(tcColumns, TC_KEYS.location) || pickColumn(realColumns, TC_KEYS.location);
+
+  state.catalogs.month = monthCol ? uniqueValues(tcRows.length ? tcRows : realRows, monthCol) : [];
+  state.catalogs.type = typeCol ? uniqueValues(tcRows.length ? tcRows : realRows, typeCol) : [];
+  state.catalogs.location = locCol ? uniqueValues(tcRows.length ? tcRows : realRows, locCol) : [];
+
+  state.tcColumns = { monthCol, typeCol, locCol };
+
+  const preferredExtras = ['Sociedad', 'Centro de Costo', 'Cuenta', 'Moneda', 'Clase de coste'];
+  const existingPreferred = preferredExtras.filter((c) => realColumns.includes(c));
+  const fallbackExtras = realColumns.slice(0, 5);
+  state.extraFilterColumns = existingPreferred.length ? existingPreferred : fallbackExtras;
+
+  state.extraFilters = Object.fromEntries(state.extraFilterColumns.map((col) => [col, '']));
+  state.catalogs.extra = Object.fromEntries(
+    state.extraFilterColumns.map((col) => [col, uniqueValues(realRows, col)])
+  );
+}
+
+function buildExtraFilters() {
+  el.filterGrid.innerHTML = '';
+  state.extraFilterColumns.forEach((col) => {
+    const label = document.createElement('label');
+    label.textContent = col;
 
     const select = document.createElement('select');
     select.dataset.column = col;
-    select.innerHTML = '<option value="">Todos</option>';
-
-    const values = state.filterCatalog[col]?.length
-      ? state.filterCatalog[col]
-      : getUniqueValues([...state.real, ...state.ppto], col);
-
-    for (const value of values) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = value;
-      select.appendChild(option);
-    }
+    buildSelect(select, state.catalogs.extra[col] || [], state.extraFilters[col]);
 
     select.addEventListener('change', (event) => {
-      state.filters[col] = event.target.value;
-      renderAll();
+      state.extraFilters[col] = event.target.value;
+      state.page = 1;
+      render();
     });
 
-    wrapper.appendChild(select);
-    el.filterGrid.appendChild(wrapper);
-  }
+    label.appendChild(select);
+    el.filterGrid.appendChild(label);
+  });
 }
 
 function rowPassesFilters(row) {
-  for (const [col, value] of Object.entries(state.filters)) {
+  const { monthCol, typeCol, locCol } = state.tcColumns;
+
+  if (state.tcFilters.month && monthCol && String(row[monthCol] || '').trim() !== state.tcFilters.month) {
+    return false;
+  }
+  if (state.tcFilters.type && typeCol && String(row[typeCol] || '').trim() !== state.tcFilters.type) {
+    return false;
+  }
+  if (state.tcFilters.location && locCol && String(row[locCol] || '').trim() !== state.tcFilters.location) {
+    return false;
+  }
+
+  for (const [col, value] of Object.entries(state.extraFilters)) {
     if (!value) continue;
-    if (!(col in row)) continue;
-    if (String(row[col]).trim() !== value) return false;
+    if (String(row[col] || '').trim() !== value) return false;
   }
 
   if (!state.textQuery) return true;
-  return Object.values(row)
-    .join(' | ')
-    .toLowerCase()
-    .includes(state.textQuery.toLowerCase());
+  return Object.values(row).join(' | ').toLowerCase().includes(state.textQuery.toLowerCase());
 }
 
-function filterRows(rows) {
-  return rows.filter(rowPassesFilters);
+function sortRows(rows) {
+  if (!state.sort.key) return rows;
+
+  const { key, dir } = state.sort;
+  const sorted = [...rows].sort((a, b) => {
+    const av = String(a[key] ?? '').trim();
+    const bv = String(b[key] ?? '').trim();
+
+    const an = Number(av.replace(',', '.'));
+    const bn = Number(bv.replace(',', '.'));
+    const bothNumeric = !Number.isNaN(an) && !Number.isNaN(bn) && av !== '' && bv !== '';
+
+    if (bothNumeric) return an - bn;
+    return av.localeCompare(bv, 'es', { sensitivity: 'base' });
+  });
+
+  return dir === 'asc' ? sorted : sorted.reverse();
 }
 
-function renderTable(tableEl, rows, counterEl) {
+function renderTable(rows) {
   if (!rows.length) {
-    tableEl.innerHTML = '<tr><td>Sin datos para mostrar.</td></tr>';
-    counterEl.textContent = '(0 filas)';
+    el.tableReal.innerHTML = '<tr><td>Sin registros para mostrar.</td></tr>';
     return;
   }
 
   const headers = Object.keys(rows[0]);
-  const shownRows = rows.slice(0, ROW_RENDER_LIMIT);
-
-  const thead = `<thead><tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead>`;
-  const tbodyRows = shownRows
-    .map(
-      (row) =>
-        `<tr>${headers.map((h) => `<td>${row[h] == null ? '' : row[h]}</td>`).join('')}</tr>`
-    )
+  const head = headers
+    .map((h) => {
+      const active = state.sort.key === h ? 'sort-active' : '';
+      const arrow = state.sort.key === h ? (state.sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+      return `<th class="${active}" data-col="${h}">${h}${arrow}</th>`;
+    })
     .join('');
 
-  tableEl.innerHTML = `${thead}<tbody>${tbodyRows}</tbody>`;
-  counterEl.textContent = `(${rows.length.toLocaleString('es-CL')} filas${rows.length > ROW_RENDER_LIMIT ? `, mostrando ${ROW_RENDER_LIMIT}` : ''})`;
+  const body = rows
+    .map((row) => `<tr>${headers.map((h) => `<td>${row[h] ?? ''}</td>`).join('')}</tr>`)
+    .join('');
+
+  el.tableReal.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
+
+  el.tableReal.querySelectorAll('th[data-col]').forEach((th) => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.col;
+      if (state.sort.key === key) {
+        state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.sort.key = key;
+        state.sort.dir = 'asc';
+      }
+      render();
+    });
+  });
 }
 
-function renderAll() {
-  const realFiltered = filterRows(state.real);
-  const pptoFiltered = filterRows(state.ppto);
-  renderTable(el.tableReal, realFiltered, el.countReal);
-  renderTable(el.tablePpto, pptoFiltered, el.countPpto);
+function render() {
+  const filtered = state.rows.filter(rowPassesFilters);
+  const sorted = sortRows(filtered);
+
+  const total = sorted.length;
+  const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+  if (state.page > totalPages) state.page = totalPages;
+
+  const start = (state.page - 1) * state.pageSize;
+  const pageRows = sorted.slice(start, start + state.pageSize);
+
+  renderTable(pageRows);
+
+  const from = total ? start + 1 : 0;
+  const to = Math.min(start + state.pageSize, total);
+  el.tableMeta.textContent = `${total.toLocaleString('es-CL')} registros filtrados | mostrando ${from}-${to}`;
+  el.pageInfo.textContent = `Página ${state.page} de ${totalPages}`;
+  el.prevPage.disabled = state.page <= 1;
+  el.nextPage.disabled = state.page >= totalPages;
 }
 
-function extractGlobalFiltersFromWorkbook(workbook, combinedRows) {
-  const tdRows = normalizeRows(normalizeHeaders(getSheetRows(workbook, SHEET_TC).length ? getSheetRows(workbook, SHEET_TC) : getSheetRows(workbook, SHEET_TD)));
-  if (!tdRows.length) {
-    const catalog = Object.fromEntries(
-      FALLBACK_FILTER_COLUMNS.map((col) => [col, getUniqueValues(combinedRows, col)])
-    );
-    return { columns: [...FALLBACK_FILTER_COLUMNS], catalog, source: 'fallback' };
-  }
+function wireEvents() {
+  el.tcMonth.addEventListener('change', (e) => {
+    state.tcFilters.month = e.target.value;
+    state.page = 1;
+    render();
+  });
 
-  const candidateColumns = Object.keys(tdRows[0]).filter((col) =>
-    tdRows.some((row) => String(row[col] || '').trim())
-  );
-  const columns = candidateColumns.length ? candidateColumns : [...FALLBACK_FILTER_COLUMNS];
+  el.tcType.addEventListener('change', (e) => {
+    state.tcFilters.type = e.target.value;
+    state.page = 1;
+    render();
+  });
 
-  const catalog = Object.fromEntries(
-    columns.map((col) => {
-      const valuesFromTD = getUniqueValues(tdRows, col);
-      const valuesFromData = getUniqueValues(combinedRows, col);
-      return [col, valuesFromTD.length ? valuesFromTD : valuesFromData];
-    })
-  );
+  el.tcLocation.addEventListener('change', (e) => {
+    state.tcFilters.location = e.target.value;
+    state.page = 1;
+    render();
+  });
 
-  return { columns, catalog, source: getSheetRows(workbook, SHEET_TC).length ? SHEET_TC : SHEET_TD };
+  el.textQuery.addEventListener('input', (e) => {
+    state.textQuery = e.target.value.trim();
+    state.page = 1;
+    render();
+  });
+
+  el.pageSize.addEventListener('change', (e) => {
+    state.pageSize = Number(e.target.value);
+    state.page = 1;
+    render();
+  });
+
+  el.prevPage.addEventListener('click', () => {
+    if (state.page > 1) state.page -= 1;
+    render();
+  });
+
+  el.nextPage.addEventListener('click', () => {
+    state.page += 1;
+    render();
+  });
+
+  el.clearFilters.addEventListener('click', () => {
+    state.tcFilters = { month: '', type: '', location: '' };
+    state.textQuery = '';
+    state.extraFilters = Object.fromEntries(state.extraFilterColumns.map((c) => [c, '']));
+    state.page = 1;
+
+    el.textQuery.value = '';
+    el.tcMonth.value = '';
+    el.tcType.value = '';
+    el.tcLocation.value = '';
+    Array.from(el.filterGrid.querySelectorAll('select')).forEach((s) => {
+      s.value = '';
+    });
+
+    render();
+  });
 }
 
-function applyWorkbook(workbook, sourceLabel = 'archivo') {
+function applyWorkbook(workbook) {
   const realRows = normalizeRows(normalizeHeaders(getSheetRows(workbook, SHEET_REAL)));
-  const pptoRows = normalizeRows(
-    normalizeHeaders(
-      getSheetRows(workbook, SHEET_PPTO).length
-        ? getSheetRows(workbook, SHEET_PPTO)
-        : getSheetRows(workbook, SHEET_PPTO_ALT)
-    )
-  );
+  const tcRowsRaw = getSheetRows(workbook, SHEET_TC);
+  const tdRowsRaw = getSheetRows(workbook, SHEET_TD);
+  const tcRows = normalizeRows(normalizeHeaders(tcRowsRaw.length ? tcRowsRaw : tdRowsRaw));
 
-  state.real = realRows;
-  state.ppto = pptoRows;
-
-  if (!state.real.length && !state.ppto.length) {
-    updateStatus('No se encontraron hojas BD_Real y/o BD_Presupuesto en el archivo.', 'error');
+  if (!realRows.length) {
+    updateStatus('No se encontró la hoja BD_Real en el archivo.', 'error');
     return;
   }
 
-  const globalFilterSetup = extractGlobalFiltersFromWorkbook(workbook, [...state.real, ...state.ppto]);
-  initializeFilters(globalFilterSetup.columns, globalFilterSetup.catalog);
+  state.rows = realRows;
+  setupCatalogs(tcRows, realRows);
+
+  buildSelect(el.tcMonth, state.catalogs.month, state.tcFilters.month);
+  buildSelect(el.tcType, state.catalogs.type, state.tcFilters.type);
+  buildSelect(el.tcLocation, state.catalogs.location, state.tcFilters.location);
+  buildExtraFilters();
 
   updateStatus(
-    `${sourceLabel} cargado. BD_Real: ${state.real.length.toLocaleString('es-CL')} filas | BD_Presupuesto: ${state.ppto.length.toLocaleString('es-CL')} filas | filtros: ${globalFilterSetup.source}`
+    `Archivo cargado correctamente. BD_Real: ${realRows.length.toLocaleString('es-CL')} filas.`
   );
 
-  buildFilters();
-  renderAll();
-}
-
-async function loadFromArrayBuffer(buffer, sourceLabel) {
-  const workbook = XLSX.read(buffer, { type: 'array' });
-  applyWorkbook(workbook, sourceLabel);
+  render();
 }
 
 async function loadWorkbookFromRoot() {
   try {
-    updateStatus('Leyendo BD Real vs PPTO.xlsx desde la raíz...');
+    updateStatus('Cargando BD Real vs PPTO.xlsx desde la raíz...');
     const response = await fetch(DEFAULT_EXCEL_PATH);
     if (!response.ok) throw new Error('No accesible por fetch');
+
     const buf = await response.arrayBuffer();
-    await loadFromArrayBuffer(buf, 'Archivo raíz');
+    const workbook = XLSX.read(buf, { type: 'array' });
+    applyWorkbook(workbook);
   } catch {
     updateStatus(
-      'No se pudo cargar automáticamente desde la raíz. Selecciona el Excel manualmente.',
+      'No se pudo cargar BD Real vs PPTO.xlsx. Verifica que esté en la raíz del proyecto.',
       'error'
     );
   }
 }
 
-el.file.addEventListener('change', async (event) => {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  updateStatus(`Leyendo ${file.name}...`);
-  const buf = await file.arrayBuffer();
-  await loadFromArrayBuffer(buf, file.name);
-});
-
-el.loadDefaultBtn.addEventListener('click', async () => {
-  await loadWorkbookFromRoot();
-});
-
-el.clearFilters.addEventListener('click', () => {
-  state.filters = Object.fromEntries(state.filterColumns.map((c) => [c, '']));
-  state.textQuery = '';
-  el.textQuery.value = '';
-  for (const select of el.filterGrid.querySelectorAll('select')) {
-    select.value = '';
-  }
-  renderAll();
-});
-
-el.textQuery.addEventListener('input', (event) => {
-  state.textQuery = event.target.value.trim();
-  renderAll();
-});
-
+wireEvents();
 loadWorkbookFromRoot();
