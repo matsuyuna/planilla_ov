@@ -1,13 +1,18 @@
 const SHEET_REAL = 'BD_Real';
 const SHEET_PPTO = 'BD_Presupuesto';
 const SHEET_PPTO_ALT = 'BD Presupuesto';
-const GLOBAL_FILTER_COLUMNS = ['Month', 'TIPO__PRESUPUESTO', 'UBICACIÓN', 'Fecha'];
+const SHEET_TC = 'TC';
+const SHEET_TD = 'TD';
+const FALLBACK_FILTER_COLUMNS = ['Month', 'TIPO__PRESUPUESTO', 'UBICACIÓN', 'Fecha'];
+const DEFAULT_EXCEL_PATH = './BD Real vs PPTO.xlsx';
 const ROW_RENDER_LIMIT = 600;
 
 const state = {
   real: [],
   ppto: [],
-  filters: Object.fromEntries(GLOBAL_FILTER_COLUMNS.map((c) => [c, ''])),
+  filterColumns: [...FALLBACK_FILTER_COLUMNS],
+  filterCatalog: {},
+  filters: Object.fromEntries(FALLBACK_FILTER_COLUMNS.map((c) => [c, ''])),
   textQuery: '',
 };
 
@@ -76,9 +81,26 @@ function updateStatus(message, type = 'info') {
   el.status.style.borderLeft = `5px solid ${type === 'error' ? '#ef4444' : '#10b981'}`;
 }
 
+function getUniqueValues(rows, col) {
+  return Array.from(
+    new Set(
+      rows
+        .map((r) => (r[col] == null ? '' : String(r[col]).trim()))
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b, 'es'));
+}
+
+function initializeFilters(columns, catalog = {}) {
+  state.filterColumns = columns.length ? columns : [...FALLBACK_FILTER_COLUMNS];
+  state.filterCatalog = catalog;
+  state.filters = Object.fromEntries(state.filterColumns.map((c) => [c, '']));
+}
+
 function buildFilters() {
   el.filterGrid.innerHTML = '';
-  for (const col of GLOBAL_FILTER_COLUMNS) {
+
+  for (const col of state.filterColumns) {
     const wrapper = document.createElement('label');
     wrapper.textContent = col;
 
@@ -86,13 +108,9 @@ function buildFilters() {
     select.dataset.column = col;
     select.innerHTML = '<option value="">Todos</option>';
 
-    const values = Array.from(
-      new Set(
-        [...state.real, ...state.ppto]
-          .map((r) => (r[col] == null ? '' : String(r[col]).trim()))
-          .filter(Boolean)
-      )
-    ).sort((a, b) => a.localeCompare(b, 'es'));
+    const values = state.filterCatalog[col]?.length
+      ? state.filterCatalog[col]
+      : getUniqueValues([...state.real, ...state.ppto], col);
 
     for (const value of values) {
       const option = document.createElement('option');
@@ -158,10 +176,39 @@ function renderAll() {
   renderTable(el.tablePpto, pptoFiltered, el.countPpto);
 }
 
-function applyWorkbook(workbook) {
+function extractGlobalFiltersFromWorkbook(workbook, combinedRows) {
+  const tdRows = normalizeRows(normalizeHeaders(getSheetRows(workbook, SHEET_TC).length ? getSheetRows(workbook, SHEET_TC) : getSheetRows(workbook, SHEET_TD)));
+  if (!tdRows.length) {
+    const catalog = Object.fromEntries(
+      FALLBACK_FILTER_COLUMNS.map((col) => [col, getUniqueValues(combinedRows, col)])
+    );
+    return { columns: [...FALLBACK_FILTER_COLUMNS], catalog, source: 'fallback' };
+  }
+
+  const candidateColumns = Object.keys(tdRows[0]).filter((col) =>
+    tdRows.some((row) => String(row[col] || '').trim())
+  );
+  const columns = candidateColumns.length ? candidateColumns : [...FALLBACK_FILTER_COLUMNS];
+
+  const catalog = Object.fromEntries(
+    columns.map((col) => {
+      const valuesFromTD = getUniqueValues(tdRows, col);
+      const valuesFromData = getUniqueValues(combinedRows, col);
+      return [col, valuesFromTD.length ? valuesFromTD : valuesFromData];
+    })
+  );
+
+  return { columns, catalog, source: getSheetRows(workbook, SHEET_TC).length ? SHEET_TC : SHEET_TD };
+}
+
+function applyWorkbook(workbook, sourceLabel = 'archivo') {
   const realRows = normalizeRows(normalizeHeaders(getSheetRows(workbook, SHEET_REAL)));
   const pptoRows = normalizeRows(
-    normalizeHeaders(getSheetRows(workbook, SHEET_PPTO).length ? getSheetRows(workbook, SHEET_PPTO) : getSheetRows(workbook, SHEET_PPTO_ALT))
+    normalizeHeaders(
+      getSheetRows(workbook, SHEET_PPTO).length
+        ? getSheetRows(workbook, SHEET_PPTO)
+        : getSheetRows(workbook, SHEET_PPTO_ALT)
+    )
   );
 
   state.real = realRows;
@@ -172,17 +219,35 @@ function applyWorkbook(workbook) {
     return;
   }
 
+  const globalFilterSetup = extractGlobalFiltersFromWorkbook(workbook, [...state.real, ...state.ppto]);
+  initializeFilters(globalFilterSetup.columns, globalFilterSetup.catalog);
+
   updateStatus(
-    `Archivo cargado. BD_Real: ${state.real.length.toLocaleString('es-CL')} filas | BD_Presupuesto: ${state.ppto.length.toLocaleString('es-CL')} filas`
+    `${sourceLabel} cargado. BD_Real: ${state.real.length.toLocaleString('es-CL')} filas | BD_Presupuesto: ${state.ppto.length.toLocaleString('es-CL')} filas | filtros: ${globalFilterSetup.source}`
   );
 
   buildFilters();
   renderAll();
 }
 
-async function loadFromArrayBuffer(buffer) {
+async function loadFromArrayBuffer(buffer, sourceLabel) {
   const workbook = XLSX.read(buffer, { type: 'array' });
-  applyWorkbook(workbook);
+  applyWorkbook(workbook, sourceLabel);
+}
+
+async function loadWorkbookFromRoot() {
+  try {
+    updateStatus('Leyendo BD Real vs PPTO.xlsx desde la raíz...');
+    const response = await fetch(DEFAULT_EXCEL_PATH);
+    if (!response.ok) throw new Error('No accesible por fetch');
+    const buf = await response.arrayBuffer();
+    await loadFromArrayBuffer(buf, 'Archivo raíz');
+  } catch {
+    updateStatus(
+      'No se pudo cargar automáticamente desde la raíz. Selecciona el Excel manualmente.',
+      'error'
+    );
+  }
 }
 
 el.file.addEventListener('change', async (event) => {
@@ -190,26 +255,15 @@ el.file.addEventListener('change', async (event) => {
   if (!file) return;
   updateStatus(`Leyendo ${file.name}...`);
   const buf = await file.arrayBuffer();
-  await loadFromArrayBuffer(buf);
+  await loadFromArrayBuffer(buf, file.name);
 });
 
 el.loadDefaultBtn.addEventListener('click', async () => {
-  try {
-    updateStatus('Intentando leer BD Real vs PPTO.xlsx del repositorio...');
-    const response = await fetch('./BD Real vs PPTO.xlsx');
-    if (!response.ok) throw new Error('No accesible por fetch');
-    const buf = await response.arrayBuffer();
-    await loadFromArrayBuffer(buf);
-  } catch {
-    updateStatus(
-      'No se pudo cargar automáticamente. Abre index.html y selecciona manualmente el Excel.',
-      'error'
-    );
-  }
+  await loadWorkbookFromRoot();
 });
 
 el.clearFilters.addEventListener('click', () => {
-  state.filters = Object.fromEntries(GLOBAL_FILTER_COLUMNS.map((c) => [c, '']));
+  state.filters = Object.fromEntries(state.filterColumns.map((c) => [c, '']));
   state.textQuery = '';
   el.textQuery.value = '';
   for (const select of el.filterGrid.querySelectorAll('select')) {
@@ -222,3 +276,5 @@ el.textQuery.addEventListener('input', (event) => {
   state.textQuery = event.target.value.trim();
   renderAll();
 });
+
+loadWorkbookFromRoot();
