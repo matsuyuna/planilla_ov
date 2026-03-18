@@ -10,40 +10,66 @@
   </head>
   <body>
     <main class="container">
-      <h1>Visor de Planilla (sin servidor backend)</h1>
+      <h1>Planilla - Hoja BD_Real</h1>
       <p class="hint">
-        El sistema intenta cargar automáticamente <strong>BD Real vs PPTO.xlsx</strong> desde la raíz
-        del proyecto. Si no está disponible, puedes seleccionarlo manualmente.
+        Vista funcional de la primera hoja con filtros tipo TC, orden por columnas y paginación.
+        El archivo se carga automáticamente desde <strong>BD Real vs PPTO.xlsx</strong>.
       </p>
-
-      <section class="toolbar">
-        <label for="excelFile" class="file-label">Seleccionar Excel</label>
-        <input id="excelFile" type="file" accept=".xlsx,.xls" />
-        <button id="loadDefaultBtn" type="button">Recargar archivo de la raíz</button>
-      </section>
 
       <section id="status" class="status">Inicializando…</section>
 
+      <section class="tc-filters">
+        <h2>Filtros base (TC)</h2>
+        <div class="tc-grid">
+          <label>
+            Mes
+            <select id="tcMonth"></select>
+          </label>
+          <label>
+            Tipo
+            <select id="tcType"></select>
+          </label>
+          <label>
+            Ubicación
+            <select id="tcLocation"></select>
+          </label>
+        </div>
+      </section>
+
       <section class="filters">
-        <h2>Filtros globales (modo AND)</h2>
+        <div class="section-header">
+          <h2>Filtros adicionales</h2>
+          <button id="clearFilters" type="button">Limpiar filtros</button>
+        </div>
         <div class="filter-grid" id="filterGrid"></div>
         <label class="text-filter">
           Buscar texto libre
           <input id="textQuery" type="search" placeholder="Ej: CECO, cuenta, explicación…" />
         </label>
-        <button id="clearFilters" type="button">Limpiar filtros</button>
       </section>
 
-      <section class="tables">
-        <article>
-          <h2>BD_Real <span id="countReal" class="count"></span></h2>
-          <div class="table-wrap"><table id="tableReal"></table></div>
-        </article>
+      <section class="table-panel">
+        <div class="table-head">
+          <h2>BD_Real</h2>
+          <p id="tableMeta" class="count"></p>
+        </div>
 
-        <article>
-          <h2>BD_Presupuesto <span id="countPpto" class="count"></span></h2>
-          <div class="table-wrap"><table id="tablePpto"></table></div>
-        </article>
+        <div class="table-wrap"><table id="tableReal"></table></div>
+
+        <div class="pager">
+          <button id="prevPage" type="button">Anterior</button>
+          <span id="pageInfo"></span>
+          <button id="nextPage" type="button">Siguiente</button>
+          <label>
+            Filas por página
+            <select id="pageSize">
+              <option value="25">25</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+            </select>
+          </label>
+        </div>
       </section>
     </main>
   </body>
